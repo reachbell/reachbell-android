@@ -1,13 +1,13 @@
 package com.reachbell.helpers
 
 import com.reachbell.ReachBellException
-import com.reachbell.constants.Defaults
 import com.reachbell.constants.Headers
 import com.reachbell.types.HttpResponse
 import com.reachbell.types.HttpTransport
 import com.reachbell.types.ReachBellConfig
 import com.reachbell.utils.optNonBlankString
 import com.reachbell.utils.parseJsonObject
+import com.reachbell.utils.userAgent
 import org.json.JSONObject
 import java.io.IOException
 
@@ -19,7 +19,7 @@ internal class ApiClient(
         Headers.API_KEY to config.apiKey,
         Headers.CONTENT_TYPE to Headers.JSON,
         Headers.ACCEPT to "application/json",
-        Headers.USER_AGENT to Defaults.USER_AGENT,
+        Headers.USER_AGENT to userAgent(config.device),
     )
 
     fun post(path: String, body: JSONObject): JSONObject {
