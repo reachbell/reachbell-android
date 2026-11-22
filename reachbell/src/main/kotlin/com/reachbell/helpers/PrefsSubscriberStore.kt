@@ -22,9 +22,13 @@ internal class PrefsSubscriberStore(context: Context) : SubscriberStore {
             }.apply()
         }
 
+    override val externalIdClearPending: Boolean
+        get() = prefs.getBoolean(StorageKeys.EXTERNAL_ID_CLEAR_PENDING, false)
+
     override fun save(token: String, externalId: String?) {
         prefs.edit().apply {
             putString(StorageKeys.SUBSCRIBER_TOKEN, token)
+            remove(StorageKeys.EXTERNAL_ID_CLEAR_PENDING)
             if (externalId.isNullOrBlank()) remove(StorageKeys.EXTERNAL_ID) else putString(StorageKeys.EXTERNAL_ID, externalId)
         }.apply()
     }
@@ -33,6 +37,7 @@ internal class PrefsSubscriberStore(context: Context) : SubscriberStore {
         prefs.edit()
             .remove(StorageKeys.SUBSCRIBER_TOKEN)
             .remove(StorageKeys.EXTERNAL_ID)
+            .putBoolean(StorageKeys.EXTERNAL_ID_CLEAR_PENDING, true)
             .apply()
     }
 }

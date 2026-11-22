@@ -62,8 +62,10 @@ internal class ReachBellClient(
     }
 
     suspend fun register(externalId: String?): String {
-        awaitPendingReset()
+        // Epoch first: reset() publishes its job before bumping, so either we see the bump here and
+        // wait for the published job, or we read the old epoch and back off at the lock check below.
         val epoch = resetEpoch.get()
+        awaitPendingReset()
         val pushedBefore = latestPushedToken.get()
         // Outside the lock: a hung Firebase task must not block onNewToken() or other calls.
         val fetched = fetchToken()
@@ -79,7 +81,9 @@ internal class ReachBellClient(
             val pushedNow = latestPushedToken.get()
             val fcmToken = if (pushedNow != null && pushedNow !== pushedBefore) pushedNow.value else fetched
             withContext(ioDispatcher) {
-                post(fcmToken, externalId ?: store.externalId)
+                // C1a: after reset(), the first registration without an externalId clears it server-side.
+                val clearExternalId = externalId.isNullOrBlank() && store.externalIdClearPending
+                post(fcmToken, externalId ?: store.externalId, clearExternalId)
             }
         }
     }
@@ -197,12 +201,12 @@ internal class ReachBellClient(
         cacheLoaded = true
     }
 
-    private fun post(fcmToken: String, externalId: String?): String {
+    private fun post(fcmToken: String, externalId: String?, clearExternalId: Boolean = false): String {
         // C2: on rotation, the API moves tags and externalId from the previous subscriber to this one.
         val previousToken = store.token?.takeIf { it != fcmToken }
         val response = api.post(
             ApiPaths.SUBSCRIBERS,
-            RequestBodies.subscribe(fcmToken, externalId, previousToken, config.device),
+            RequestBodies.subscribe(fcmToken, externalId, previousToken, config.device, clearExternalId),
         )
         val subscriberToken = response.optString("token").takeIf { it.isNotBlank() } ?: fcmToken
         store.save(subscriberToken, externalId)

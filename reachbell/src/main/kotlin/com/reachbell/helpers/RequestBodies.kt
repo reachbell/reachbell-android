@@ -12,6 +12,7 @@ internal object RequestBodies {
         externalId: String?,
         previousToken: String? = null,
         device: DeviceInfo = DeviceInfo(),
+        clearExternalId: Boolean = false,
     ): JSONObject =
         JSONObject()
             .put("token", token)
@@ -19,7 +20,12 @@ internal object RequestBodies {
             .put("platform", Defaults.PLATFORM)
             .put("os", Defaults.OS_NAME)
             .apply {
-                if (!externalId.isNullOrBlank()) put("externalId", externalId)
+                if (!externalId.isNullOrBlank()) {
+                    put("externalId", externalId)
+                } else if (clearExternalId) {
+                    // C1a: explicit JSON null (put(name, null) would drop the key) tells the API to clear it.
+                    put("externalId", JSONObject.NULL)
+                }
                 if (!previousToken.isNullOrBlank() && previousToken != token) put("previousToken", previousToken)
                 if (!device.osVersion.isNullOrBlank()) put("osVersion", device.osVersion)
                 if (!device.deviceType.isNullOrBlank()) put("device", device.deviceType)

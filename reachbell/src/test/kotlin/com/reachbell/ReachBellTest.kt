@@ -342,6 +342,8 @@ class ReachBellTest {
         ReachBell.register(externalId = "user_42")
 
         ReachBell.reset()
+        // Rotate so a stale stored token would show up as previousToken if reset() had not cleared it.
+        tokens.token = "fcm-token-2"
         ReachBell.register(externalId = "user_9")
 
         assertEquals(
@@ -349,9 +351,49 @@ class ReachBellTest {
             transport.requests.map { it.url.removePrefix("https://api.example.test") },
         )
         val body = transport.requests.last().body
+        assertEquals("fcm-token-2", body.getString("token"))
         assertEquals("user_9", body.getString("externalId"))
         assertFalse(body.has("previousToken"))
         assertEquals("user_9", store.externalId)
+        assertFalse(store.externalIdClearPending)
+    }
+
+    @Test
+    fun firstRegisterAfterResetSendsExplicitNullExternalIdOnce() = runTest {
+        configure()
+        ReachBell.register(externalId = "user_42")
+        transport.fail(IOException("offline")) // unidentify fails: the null externalId repairs it
+
+        ReachBell.reset()
+        advanceUntilIdle()
+        assertTrue(store.externalIdClearPending)
+        ReachBell.register()
+
+        val body = transport.requests.last().body
+        assertEquals("https://api.example.test/subscribers", transport.requests.last().url)
+        assertTrue(body.has("externalId"))
+        assertTrue(body.isNull("externalId"))
+        assertTrue(body.toString().contains("\"externalId\":null"))
+        assertFalse(store.externalIdClearPending)
+
+        ReachBell.register()
+        assertFalse(transport.requests.last().body.has("externalId"))
+    }
+
+    @Test
+    fun failedRegisterAfterResetKeepsClearPending() = runTest {
+        configure()
+        ReachBell.register(externalId = "user_42")
+        ReachBell.reset()
+        advanceUntilIdle()
+        transport.fail(IOException("offline"))
+
+        expectCode(ReachBellException.Code.NETWORK_ERROR) { ReachBell.register() }
+        assertTrue(store.externalIdClearPending)
+
+        ReachBell.register()
+        assertTrue(transport.requests.last().body.isNull("externalId"))
+        assertFalse(store.externalIdClearPending)
     }
 
     @Test

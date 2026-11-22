@@ -74,7 +74,7 @@ class MyMessagingService : FirebaseMessagingService() {
 
 When FCM rotates the token, `onNewToken()` (and a `register()` that finds a different token) sends the stored subscriber token as `previousToken`. ReachBell moves the old subscriber's tags and external id to the new token and deactivates the old one, so you do not re-tag or re-identify after a rotation.
 
-Call `reset()` when the user logs out. It returns immediately; SDK calls made after it wait for it to finish, and `getSubscriberToken()` returns `null` straight away. A `register()` that is still fetching its FCM token when `reset()` is called fails with `NO_SUBSCRIPTION` instead of saving the old subscription again. Call `register()` again afterwards to keep the device subscribed anonymously or for the next user.
+Call `reset()` when the user logs out. It returns immediately; SDK calls made after it wait for it to finish, and `getSubscriberToken()` returns `null` straight away. A `register()` that is still fetching its FCM token when `reset()` is called fails with `NO_SUBSCRIPTION` instead of saving the old subscription again. Call `register()` again afterwards to keep the device subscribed anonymously or for the next user. The first `register()` after `reset()` that has no `externalId` sends `"externalId": null`, so the server drops the old user's link even if the unidentify call failed offline.
 
 Requests carry a `User-Agent` such as `ReachBell/1.0.0 (Linux; Android 14; Pixel 8) reachbell-android/1.0.0` plus `os`, `osVersion` and `device` fields, so the dashboard shows the device as Android mobile or tablet.
 
