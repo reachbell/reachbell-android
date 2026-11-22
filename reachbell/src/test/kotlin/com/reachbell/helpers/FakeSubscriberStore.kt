@@ -7,13 +7,17 @@ internal class FakeSubscriberStore(
     override var externalId: String? = null,
 ) : SubscriberStore {
 
+    override var externalIdClearPending: Boolean = false
+
     override fun save(token: String, externalId: String?) {
         this.token = token
         this.externalId = externalId
+        externalIdClearPending = false
     }
 
     override fun clear() {
         token = null
         externalId = null
+        externalIdClearPending = true
     }
 }

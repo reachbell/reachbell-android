@@ -2,9 +2,11 @@ package com.reachbell
 
 import android.content.Context
 import com.reachbell.constants.Defaults
+import com.reachbell.helpers.AndroidDeviceInfo
 import com.reachbell.helpers.FcmTokenProvider
 import com.reachbell.helpers.PrefsSubscriberStore
 import com.reachbell.helpers.UrlConnectionTransport
+import com.reachbell.types.DeviceInfo
 import com.reachbell.types.HttpTransport
 import com.reachbell.types.ReachBellConfig
 import com.reachbell.types.SubscriberStore
@@ -30,6 +32,7 @@ public object ReachBell {
             store = PrefsSubscriberStore(appContext),
             tokenProvider = FcmTokenProvider(),
             transport = UrlConnectionTransport(),
+            device = AndroidDeviceInfo.from(appContext),
         )
     }
 
@@ -55,6 +58,11 @@ public object ReachBell {
     @JvmStatic
     public fun getSubscriberToken(): String? = client?.subscriberToken()
 
+    /**
+     * Logs the device out: unlinks the external id on the server (`POST /subscribers/unidentify`, best
+     * effort) and then forgets the stored subscriber token and external id. Returns immediately; SDK calls
+     * made afterwards wait for it, and [getSubscriberToken] returns null straight away.
+     */
     @JvmStatic
     public fun reset() {
         client?.reset()
@@ -66,12 +74,13 @@ public object ReachBell {
         store: SubscriberStore,
         tokenProvider: TokenProvider,
         transport: HttpTransport,
+        device: DeviceInfo = DeviceInfo(),
         ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
         scope: CoroutineScope = CoroutineScope(SupervisorJob() + ioDispatcher),
     ) {
         require(apiKey.isNotBlank()) { "ReachBell apiKey must not be blank" }
         client = ReachBellClient(
-            config = ReachBellConfig(apiKey = apiKey.trim(), apiUrl = normalizeBaseUrl(apiUrl)),
+            config = ReachBellConfig(apiKey = apiKey.trim(), apiUrl = normalizeBaseUrl(apiUrl), device = device),
             store = store,
             tokenProvider = tokenProvider,
             transport = transport,

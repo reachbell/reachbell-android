@@ -3,10 +3,14 @@ package com.reachbell
 import com.reachbell.helpers.FakeSubscriberStore
 import com.reachbell.helpers.FakeTokenProvider
 import com.reachbell.helpers.FakeTransport
+import com.reachbell.types.DeviceInfo
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -46,6 +50,7 @@ class ReachBellTest {
             store = store,
             tokenProvider = tokens,
             transport = transport,
+            device = DeviceInfo(osVersion = "14", model = "Pixel 8", deviceType = "mobile"),
             ioDispatcher = dispatcher,
             scope = this,
         )
@@ -78,6 +83,11 @@ class ReachBellTest {
         assertEquals("fcm", request.body.getString("tokenType"))
         assertEquals("android", request.body.getString("platform"))
         assertFalse(request.body.has("externalId"))
+        assertFalse(request.body.has("previousToken"))
+        assertEquals("Android", request.body.getString("os"))
+        assertEquals("14", request.body.getString("osVersion"))
+        assertEquals("mobile", request.body.getString("device"))
+        assertEquals("ReachBell/1.0.0 (Linux; Android 14; Pixel 8) reachbell-android/1.0.0", request.headers["User-Agent"])
         assertEquals("fcm-token-1", ReachBell.getSubscriberToken())
     }
 
@@ -101,6 +111,7 @@ class ReachBellTest {
 
         assertEquals("fcm-token-2", token)
         assertEquals("user_42", transport.requests.last().body.getString("externalId"))
+        assertEquals("fcm-token-1", transport.requests.last().body.getString("previousToken"))
         assertEquals("user_42", store.externalId)
     }
 
@@ -235,6 +246,7 @@ class ReachBellTest {
         assertEquals("https://api.example.test/subscribers", request.url)
         assertEquals("fcm-token-rotated", request.body.getString("token"))
         assertEquals("user_42", request.body.getString("externalId"))
+        assertEquals("fcm-token-1", request.body.getString("previousToken"))
         assertEquals("fcm-token-rotated", ReachBell.getSubscriberToken())
         assertEquals("user_42", store.externalId)
     }
@@ -282,15 +294,165 @@ class ReachBellTest {
     }
 
     @Test
-    fun resetForgetsTokenAndExternalId() = runTest {
+    fun resetUnidentifiesThenForgetsTokenAndExternalId() = runTest {
+        configure()
+        ReachBell.register(externalId = "user_42")
+        transport.respond(200, """{"success":true}""")
+
+        ReachBell.reset()
+        assertNull(ReachBell.getSubscriberToken())
+        advanceUntilIdle()
+
+        val request = transport.requests.last()
+        assertEquals("https://api.example.test/subscribers/unidentify", request.url)
+        assertEquals("fcm-token-1", request.body.getString("token"))
+        assertNull(ReachBell.getSubscriberToken())
+        assertNull(store.token)
+        assertNull(store.externalId)
+        expectCode(ReachBellException.Code.NO_SUBSCRIPTION) { ReachBell.identify("user_42") }
+    }
+
+    @Test
+    fun resetClearsLocalStateEvenWhenUnidentifyFails() = runTest {
+        configure()
+        ReachBell.register(externalId = "user_42")
+        transport.fail(IOException("offline"))
+
+        ReachBell.reset()
+        advanceUntilIdle()
+
+        assertEquals(2, transport.requests.size)
+        assertNull(store.token)
+        assertNull(store.externalId)
+    }
+
+    @Test
+    fun resetWithoutSubscriptionSendsNothing() = runTest {
+        configure()
+
+        ReachBell.reset()
+        advanceUntilIdle()
+
+        assertTrue(transport.requests.isEmpty())
+    }
+
+    @Test
+    fun callsAfterResetWaitForIt() = runTest {
         configure()
         ReachBell.register(externalId = "user_42")
 
         ReachBell.reset()
+        // Rotate so a stale stored token would show up as previousToken if reset() had not cleared it.
+        tokens.token = "fcm-token-2"
+        ReachBell.register(externalId = "user_9")
 
-        assertNull(ReachBell.getSubscriberToken())
+        assertEquals(
+            listOf("/subscribers", "/subscribers/unidentify", "/subscribers"),
+            transport.requests.map { it.url.removePrefix("https://api.example.test") },
+        )
+        val body = transport.requests.last().body
+        assertEquals("fcm-token-2", body.getString("token"))
+        assertEquals("user_9", body.getString("externalId"))
+        assertFalse(body.has("previousToken"))
+        assertEquals("user_9", store.externalId)
+        assertFalse(store.externalIdClearPending)
+    }
+
+    @Test
+    fun firstRegisterAfterResetSendsExplicitNullExternalIdOnce() = runTest {
+        configure()
+        ReachBell.register(externalId = "user_42")
+        transport.fail(IOException("offline")) // unidentify fails: the null externalId repairs it
+
+        ReachBell.reset()
+        advanceUntilIdle()
+        assertTrue(store.externalIdClearPending)
+        ReachBell.register()
+
+        val body = transport.requests.last().body
+        assertEquals("https://api.example.test/subscribers", transport.requests.last().url)
+        assertTrue(body.has("externalId"))
+        assertTrue(body.isNull("externalId"))
+        assertTrue(body.toString().contains("\"externalId\":null"))
+        assertFalse(store.externalIdClearPending)
+
+        ReachBell.register()
+        assertFalse(transport.requests.last().body.has("externalId"))
+    }
+
+    @Test
+    fun failedRegisterAfterResetKeepsClearPending() = runTest {
+        configure()
+        ReachBell.register(externalId = "user_42")
+        ReachBell.reset()
+        advanceUntilIdle()
+        transport.fail(IOException("offline"))
+
+        expectCode(ReachBellException.Code.NETWORK_ERROR) { ReachBell.register() }
+        assertTrue(store.externalIdClearPending)
+
+        ReachBell.register()
+        assertTrue(transport.requests.last().body.isNull("externalId"))
+        assertFalse(store.externalIdClearPending)
+    }
+
+    @Test
+    fun resetDuringInFlightRegisterDoesNotResaveSubscription() = runTest {
+        configure()
+        val gate = CompletableDeferred<Unit>()
+        tokens.gate = gate
+        val pending = async { runCatching { ReachBell.register(externalId = "user_42") } }
+        runCurrent()
+
+        ReachBell.reset()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        val error = pending.await().exceptionOrNull() as ReachBellException
+        assertEquals(ReachBellException.Code.NO_SUBSCRIPTION, error.code)
+        assertTrue(transport.requests.isEmpty())
+        assertNull(store.token)
         assertNull(store.externalId)
-        expectCode(ReachBellException.Code.NO_SUBSCRIPTION) { ReachBell.identify("user_42") }
+    }
+
+    @Test
+    fun tokenRotatedDuringRegisterFetchIsTheOneRegistered() = runTest {
+        configure()
+        val gate = CompletableDeferred<Unit>()
+        tokens.gate = gate
+        val pending = async { ReachBell.register() }
+        runCurrent()
+
+        ReachBell.onNewToken("fcm-token-rotated")
+        runCurrent()
+        gate.complete(Unit)
+
+        assertEquals("fcm-token-rotated", pending.await())
+        advanceUntilIdle()
+        assertEquals(1, transport.requests.size)
+        assertEquals("fcm-token-rotated", transport.requests.single().body.getString("token"))
+        assertEquals("fcm-token-rotated", store.token)
+    }
+
+    @Test
+    fun hungTokenFetchTimesOutWithoutBlockingRotation() = runTest {
+        configure()
+        ReachBell.register()
+        tokens.gate = CompletableDeferred() // never completes
+        val pending = async { runCatching { ReachBell.register() } }
+        runCurrent()
+
+        ReachBell.onNewToken("fcm-token-rotated")
+        runCurrent()
+
+        assertEquals(2, transport.requests.size)
+        assertEquals("fcm-token-rotated", transport.requests.last().body.getString("token"))
+        assertEquals("fcm-token-1", transport.requests.last().body.getString("previousToken"))
+
+        advanceUntilIdle()
+        val error = pending.await().exceptionOrNull() as ReachBellException
+        assertEquals(ReachBellException.Code.FCM_TOKEN_UNAVAILABLE, error.code)
+        assertEquals(2, transport.requests.size)
     }
 
     @Test

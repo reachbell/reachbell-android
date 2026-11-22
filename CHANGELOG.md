@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `reset()` calls `POST /subscribers/unidentify` with the stored subscriber token (best effort) before forgetting the local subscription, so the user is unlinked on the server at logout. Later SDK calls wait for it.
+- After `reset()`, the first `register()` without an external id sends `"externalId": null` so the server clears the link even if the best-effort unidentify failed (offline). The pending flag is kept in SharedPreferences and dropped after a successful registration.
+- On a token rotation, `POST /subscribers` sends `previousToken` (the stored subscriber token). The API moves tags and the external id to the new token and deactivates the old one.
+- Requests send a `User-Agent` of the form `ReachBell/<ver> (Linux; Android <release>; <model>) reachbell-android/<ver>` and `os`, `osVersion`, `device` body fields, so subscribers are no longer recorded as `Unknown` / `desktop`.
+
+### Fixed
+
+- The FCM token is fetched outside the registration lock with a 30 second timeout, so a hung Firebase task no longer blocks later `register()` and `onNewToken()` calls. A token delivered to `onNewToken()` during the fetch is still the one registered.
+- `reset()`, `identify()`, `tag()` and `untag()` are serialised with `register()`; an in-flight `register()` no longer re-saves a subscription that `reset()` cleared.
+- A `register()` that started just as `reset()` was called no longer slips past it.
+- `onNewToken()` no longer swallows coroutine cancellation.
+- `getSubscriberToken()` reads an in-memory copy instead of SharedPreferences on the caller thread.
+- README documents the JitPack coordinate only; the SDK is not published to Maven Central.
+
 ## [1.0.0] - 2026-11-21
 
 ### Added

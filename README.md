@@ -8,13 +8,7 @@ Kotlin, minSdk 21, coroutines. `firebase-messaging` is an `api` dependency, so y
 
 ## Install
 
-```kotlin
-dependencies {
-    implementation("com.reachbell:reachbell-android:1.0.0")
-}
-```
-
-Via [JitPack](https://jitpack.io/#reachbell/reachbell-android):
+The SDK is published through [JitPack](https://jitpack.io/#reachbell/reachbell-android), built from the Git tag. It is not on Maven Central. Add the JitPack repository in `settings.gradle.kts` and depend on the JitPack coordinate:
 
 ```kotlin
 dependencyResolutionManagement {
@@ -69,14 +63,20 @@ class MyMessagingService : FirebaseMessagingService() {
 |---|---|
 | `init(context, apiKey, apiUrl = "https://api.reachbell.com")` | none |
 | `suspend register(externalId: String? = null): String` | `POST /subscribers` |
-| `onNewToken(token)` | `POST /subscribers` in the background, only after a successful `register()` |
+| `onNewToken(token)` | `POST /subscribers` with `previousToken` in the background, only after a successful `register()` |
 | `suspend identify(externalId)` | `POST /subscribers/identify` |
 | `suspend tag(tags)` | `POST /subscribers/tag` |
 | `suspend untag(tags)` | `POST /subscribers/untag` |
 | `getSubscriberToken(): String?` | none |
-| `reset()` | none, forgets the stored token and external id |
+| `reset()` | `POST /subscribers/unidentify` in the background (best effort), then forgets the stored token and external id |
 
 `register()` without an `externalId` keeps the one stored by an earlier `register()` or `identify()`.
+
+When FCM rotates the token, `onNewToken()` (and a `register()` that finds a different token) sends the stored subscriber token as `previousToken`. ReachBell moves the old subscriber's tags and external id to the new token and deactivates the old one, so you do not re-tag or re-identify after a rotation.
+
+Call `reset()` when the user logs out. It returns immediately; SDK calls made after it wait for it to finish, and `getSubscriberToken()` returns `null` straight away. A `register()` that is still fetching its FCM token when `reset()` is called fails with `NO_SUBSCRIPTION` instead of saving the old subscription again. Call `register()` again afterwards to keep the device subscribed anonymously or for the next user. The first `register()` after `reset()` that has no `externalId` sends `"externalId": null`, so the server drops the old user's link even if the unidentify call failed offline.
+
+Requests carry a `User-Agent` such as `ReachBell/1.0.0 (Linux; Android 14; Pixel 8) reachbell-android/1.0.0` plus `os`, `osVersion` and `device` fields, so the dashboard shows the device as Android mobile or tablet.
 
 ## Errors
 
@@ -85,8 +85,8 @@ Network methods throw `ReachBellException` with a `code`, a `statusCode` for HTT
 | `code` | Meaning |
 |---|---|
 | `NOT_INITIALIZED` | `init()` was never called. |
-| `NO_SUBSCRIPTION` | `identify()`, `tag()` or `untag()` called before a successful `register()`. |
-| `FCM_TOKEN_UNAVAILABLE` | Firebase could not return an FCM token. |
+| `NO_SUBSCRIPTION` | `identify()`, `tag()` or `untag()` called before a successful `register()`, or `reset()` called while `register()` was fetching its token. |
+| `FCM_TOKEN_UNAVAILABLE` | Firebase could not return an FCM token, or did not return one within 30 seconds. |
 | `NETWORK_ERROR` | Transport failure before a response. |
 | `SERVER_ERROR` | Non-2xx response, see `statusCode`. `403` means the plan's subscriber limit is reached. |
 | `REJECTED` | 2xx response with `success: false`, see `reason` (for example `subscriber_not_found`). |
