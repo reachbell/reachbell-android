@@ -25,21 +25,26 @@ internal class ReachBellClient(
     private val api = ApiClient(config, transport)
     private val registration = Mutex()
 
-    suspend fun register(externalId: String?): String {
-        val fcmToken = tokenProvider.fetchToken()
-        return withContext(ioDispatcher) {
-            val linkedId = externalId ?: store.externalId
-            submit(fcmToken, linkedId)
+    suspend fun register(externalId: String?): String =
+        registration.withLock {
+            val fcmToken = tokenProvider.fetchToken()
+            withContext(ioDispatcher) {
+                val linkedId = externalId ?: store.externalId
+                post(fcmToken, linkedId)
+            }
         }
-    }
 
     fun onNewToken(token: String) {
         if (token.isBlank()) return
         scope.launch {
             runCatching {
-                val current = store.token ?: return@launch
-                if (current == token) return@launch
-                submit(token, store.externalId)
+                registration.withLock {
+                    // Checked under the lock so a register() still in flight (token fetch included)
+                    // finishes first; otherwise the rotated token is dropped and a stale one is stored.
+                    val current = store.token ?: return@launch
+                    if (current == token) return@launch
+                    post(token, store.externalId)
+                }
             }
         }
     }
@@ -70,13 +75,12 @@ internal class ReachBellClient(
         store.clear()
     }
 
-    private suspend fun submit(fcmToken: String, externalId: String?): String =
-        registration.withLock {
-            val response = api.post(ApiPaths.SUBSCRIBERS, RequestBodies.subscribe(fcmToken, externalId))
-            val subscriberToken = response.optString("token").takeIf { it.isNotBlank() } ?: fcmToken
-            store.save(subscriberToken, externalId)
-            subscriberToken
-        }
+    private fun post(fcmToken: String, externalId: String?): String {
+        val response = api.post(ApiPaths.SUBSCRIBERS, RequestBodies.subscribe(fcmToken, externalId))
+        val subscriberToken = response.optString("token").takeIf { it.isNotBlank() } ?: fcmToken
+        store.save(subscriberToken, externalId)
+        return subscriberToken
+    }
 
     private fun requireToken(): String =
         store.token ?: throw ReachBellException(
